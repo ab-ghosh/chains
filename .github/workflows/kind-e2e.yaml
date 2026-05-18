@@ -30,6 +30,7 @@ jobs:
           - v1.31.x
           - v1.32.x
           - v1.33.x
+          - v1.34.x
     uses: ./.github/workflows/reusable-e2e.yaml
     with:
       k8s-version: ${{ matrix.k8s-version }}
@@ -52,5 +53,5 @@ jobs:
           - v1.6.0   # LTS
     uses: ./.github/workflows/reusable-e2e.yaml
     with:
-      k8s-version: v1.33.x  # intersection of the latest version and scaffolding
+      k8s-version: v1.34.x  # intersection of the latest version and scaffolding
       pipelines-release: ${{ matrix.pipelines-release }}
