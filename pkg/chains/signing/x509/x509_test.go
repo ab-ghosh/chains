@@ -19,6 +19,8 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +146,56 @@ func TestCreateSignerFulcioEnabledFilesystemProvider(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func TestInitializeTUFCacheDir(t *testing.T) {
+	// Reproduces the bug: when HOME points to a read-only directory,
+	// the sigstore TUF library cannot create its cache at $HOME/.sigstore/root
+	// and fails with a permission error. This is what happens in the Chains
+	// container with readOnlyRootFilesystem: true and no HOME env var set
+	// (HOME defaults to "/" for the distroless nonroot user).
+	t.Run("read-only HOME prevents cache creation", func(t *testing.T) {
+		readOnlyDir := t.TempDir()
+		if err := os.Chmod(readOnlyDir, 0o555); err != nil {
+			t.Fatalf("Failed to make dir read-only: %v", err)
+		}
+		t.Cleanup(func() { os.Chmod(readOnlyDir, 0o755) })
+
+		cacheDir := filepath.Join(readOnlyDir, ".sigstore", "root")
+		err := os.MkdirAll(cacheDir, 0o700)
+		if err == nil {
+			t.Fatal("Expected cache dir creation to fail on read-only directory, but it succeeded")
+		}
+		t.Logf("Bug reproduced — cache dir creation fails: %v", err)
+	})
+
+	// Verifies the fix: when HOME points to a writable directory (emptyDir
+	// volume in the deployment), initializeTUF() gets past the filesystem
+	// step. The mock server serves invalid TUF metadata, so we expect a TUF
+	// validation error — but NOT a filesystem error.
+	t.Run("writable HOME allows TUF initialization", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"signed":{"_type":"root","version":1},"signatures":[]}`))
+		}))
+		defer ts.Close()
+
+		writableDir := t.TempDir()
+		t.Setenv("HOME", writableDir)
+		t.Setenv("TUF_ROOT", "")
+
+		ctx := logtesting.TestContextWithLogger(t)
+		err := initializeTUF(ctx, ts.URL)
+		if err == nil {
+			return
+		}
+		if strings.Contains(err.Error(), "read-only file system") ||
+			strings.Contains(err.Error(), "permission denied") ||
+			strings.Contains(err.Error(), "creating cached local store") {
+			t.Fatalf("Got filesystem error with writable HOME=%s: %v", writableDir, err)
+		}
+		t.Logf("TUF init got past filesystem step (expected metadata error): %v", err)
+	})
 }
 
 func TestSigner_SignECDSA(t *testing.T) {
